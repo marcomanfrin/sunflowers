@@ -58,8 +58,8 @@
 
   // ---- glifi e colori ----
   const GLY = ".,:;-=+*x%#@", NG = GLY.length, LV = 8;
-  const BASE = ['#3f9a3a','#57b33f','#b6e77c','#ffd21a','#f59a0c','#7a3c10','#3d1b06','#d58a2c','#6fa832','#d4b077','#77583a','#ff3d5e','#cddc3a','#f6f2e4'];
-  const STEM=0, LEAF=1, VEIN=2, PET=3, PETB=4, DISK=5, DISKD=6, SEED=7, GREEN=8, WRAP=9, WRAPIN=10, BOW=11, PETY=12, WHITE=13;
+  const BASE = ['#3f9a3a','#57b33f','#b6e77c','#ffd21a','#f59a0c','#7a3c10','#3d1b06','#d58a2c','#6fa832','#d4b077','#77583a','#ff3d5e','#cddc3a','#f6f2e4','#e3b450'];
+  const STEM=0, LEAF=1, VEIN=2, PET=3, PETB=4, DISK=5, DISKD=6, SEED=7, GREEN=8, WRAP=9, WRAPIN=10, BOW=11, PETY=12, WHITE=13, WHEAT=14;
 
   const clamp = v => v < 0 ? 0 : v > 1 ? 1 : v;
   const ease = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
@@ -170,15 +170,25 @@
     {p:[-0.62,1.00,-0.16], kind:'daisy'},
     {p:[ 0.64,1.00,-0.14], kind:'gyp'},
     {p:[ 0.04,1.25,-0.12], kind:'gyp'},
+    {p:[-0.36,1.12,-0.20], kind:'wheat'},
+    {p:[ 0.48,1.09,-0.20], kind:'wheat'},
+    {p:[ 0.13,1.15,-0.24], kind:'wheat'},
+    {p:[-0.79,0.84,-0.18], kind:'wheat'},
+    {p:[ 0.83,0.86,-0.16], kind:'wheat'},
   ];
   let seed = 20240607;
   const rnd = () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t ^= t + Math.imul(t ^ t >>> 7, 61 | t); return ((t ^ t >>> 14) >>> 0)/4294967296; };
   const unit = (x, y, z) => { const l = Math.hypot(x, y, z) || 1; return [x/l, y/l, z/l]; };
   FILL.forEach((s, j) => {
     s.order = j; s.cur = s.p.slice(); s.thin = true;
-    s.face = [s.p[0]*0.6, 0.3, 1]; basis(s);
+    s.face = s.kind === 'wheat' ? [s.p[0]*0.9, 1.2, 0.3] : [s.p[0]*0.6, 0.3, 1]; basis(s);
     s.seg = []; s.dots = []; s.heads = [];
-    if (s.kind === 'gyp'){
+    if (s.kind === 'wheat'){
+      s.d = unit(s.n[0], s.n[1] + 0.8, s.n[2]);
+      const sd = unit(s.d[1], -s.d[0], 0);
+      s.side = [sd[0], sd[1], 0.15];
+      s.len = 0.11 + rnd()*0.04; s.ng = 9 + (rnd()*4 | 0);
+    } else if (s.kind === 'gyp'){
       const nb = 5 + (rnd()*3 | 0);
       for (let k = 0; k < nb; k++){
         const d = unit(s.n[0]*0.6 + (rnd() - .5)*1.8, 0.55 + (rnd() - .5)*1.4, s.n[2]*0.6 + (rnd() - .5)*1.2);
@@ -347,8 +357,43 @@
     }
   }
 
+  // spiga: chicchi su due file alternate lungo l'asse, ciascuno con la sua resta
+  function drawEar(s, bloom){
+    const H = s.cur, d = s.d, sd = s.side, L = s.len;
+    for (let i = 0; i < s.ng; i++){
+      const t = (i + 0.5)/s.ng;
+      const e = easeOut(clamp((bloom - t*0.6)/0.3));
+      if (e <= 0) continue;
+      const sg = i & 1 ? 1 : -1, taper = 1 - 0.55*t*t;
+      const w = 0.011*taper*e, rr = 0.010*taper*e;
+      const gx = H[0] + d[0]*t*L + sd[0]*sg*w, gy = H[1] + d[1]*t*L + sd[1]*sg*w, gz = H[2] + d[2]*t*L + sd[2]*sg*w;
+      proj(gx, gy, gz);
+      const rx = Math.max(rr*S, cw*0.55), ry = Math.max(rr*1.5*S, ch*0.55);
+      const c0 = Math.floor((PX - rx)/cw), c1 = Math.floor((PX + rx)/cw);
+      const r0 = Math.floor((PY - ry)/ch), r1 = Math.floor((PY + ry)/ch);
+      for (let r = r0; r <= r1; r++){
+        const dy = ((r + .5)*ch - PY)/ry;
+        for (let c = c0; c <= c1; c++){
+          const dx = ((c + .5)*cw - PX)/rx, d2 = dx*dx + dy*dy;
+          if (d2 > 1) continue;
+          put(c, r, PZ + (1 - d2)*rr, WHEAT, (0.55 + 0.35*(1 - d2) - 0.15*sg*dx)*(0.8 + 0.2*e));
+        }
+      }
+      const al = 0.045*taper*clamp((bloom - 0.35 - t*0.4)/0.3);
+      if (al <= 0) continue;
+      const ax = d[0] + sd[0]*sg*0.45, ay = d[1] + sd[1]*sg*0.45, az = d[2] + sd[2]*sg*0.45;
+      const n = Math.ceil(al*S/(0.5*cw)) + 1;
+      for (let k = 1; k <= n; k++){
+        const u = al*k/n;
+        proj(gx + ax*u, gy + ay*u, gz + az*u);
+        putP(PZ - 0.003, WHEAT, 0.42 - 0.12*k/n);
+      }
+    }
+  }
+
   function drawSprig(s, bloom){
     const H = s.cur;
+    if (s.kind === 'wheat') return drawEar(s, bloom);
     for (const sg of s.seg){
       const fr = sg.lv ? clamp((bloom - 0.25)/0.35) : clamp(bloom/0.35);
       if (fr <= 0) continue;
