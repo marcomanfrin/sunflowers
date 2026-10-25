@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Girasoli</title>
+<style>
+  :root{
+    --bg:#000; --hint:#4d4d4d;
+    color-scheme:dark;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+    background:var(--bg);
+  }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){ --bg:#000; --hint:#4d4d4d; } }
+  :root[data-theme="dark"]{ --bg:#000; --hint:#4d4d4d; }
+  html{ scroll-padding-top:env(safe-area-inset-top,0px); }
+  *,*::before,*::after{ box-sizing:inherit; }
+  body{ margin:0; background:var(--bg); }
+  .track{ height:700vh; position:relative; }
+  .stage{
+    position:sticky; top:env(safe-area-inset-top,0px);
+    height:calc(100vh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));
+    height:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));
+    overflow:hidden; background:var(--bg);
+  }
+  canvas{ display:block; position:absolute; left:0; top:0; }
+  .hint{
+    position:fixed; left:0; right:0; bottom:calc(28px + env(safe-area-inset-bottom,0px));
+    text-align:center; color:var(--hint); font:15px/1.4 ui-monospace,Menlo,Consolas,monospace;
+    letter-spacing:.08em; pointer-events:none; opacity:0;
+    animation:hintIn 1.6s 1.2s ease forwards;
+  }
+  .hint span{ display:inline-block; animation:bob 2.2s 2.8s ease-in-out infinite; }
+  @keyframes hintIn{ to{ opacity:1; } }
+  @keyframes bob{ 50%{ transform:translateY(5px); } }
+  @media (prefers-reduced-motion: reduce){ .hint span{ animation:none; } }
+</style>
+</head>
+<body>
+<div class="track">
+  <div class="stage">
+    <canvas id="cv" role="img" aria-label="Bouquet di girasoli in ASCII art che cresce e sboccia"></canvas>
+  </div>
+</div>
+<div class="hint" id="hint">scorri <span>↓</span></div>
+
+<script>
+(function(){
+  const stage = document.querySelector('.stage');
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d', {alpha:false});
+  const hint = document.getElementById('hint');
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const amp = reduce ? 0 : 1;
+  const TW = Math.PI*2;
+
+  // ---- glifi e colori ----
+  const GLY = ".,:;-=+*x%#@", NG = GLY.length, LV = 8;
+  const BASE = ['#3f9a3a','#57b33f','#b6e77c','#ffd21a','#f59a0c','#7a3c10','#3d1b06','#d58a2c','#6fa832','#d4b077','#77583a','#ff3d5e','#cddc3a'];
+  const STEM=0, LEAF=1, VEIN=2, PET=3, PETB=4, DISK=5, DISKD=6, SEED=7, GREEN=8, WRAP=9, WRAPIN=10, BOW=11, PETY=12;
+
+  const clamp = v => v < 0 ? 0 : v > 1 ? 1 : v;
+  const ease = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+  const easeOut = t => 1 - Math.pow(1-t, 3);
+
+  let dpr, WD, HD, cw, ch, COLS, ROWS, N, zb, cb, gb, jit, atlas, S, CX, CY, OX, OY;
+  let dirty = true;
+
+  function hexRGB(h){ return [parseInt(h.substr(1,2),16), parseInt(h.substr(3,2),16), parseInt(h.substr(5,2),16)]; }
+
+  function buildAtlas(){
+    atlas = document.createElement('canvas');
+    atlas.width = cw*NG; atlas.height = ch*BASE.length*LV;
+    const a = atlas.getContext('2d');
+    a.fillStyle = '#000'; a.fillRect(0, 0, atlas.width, atlas.height);
+    a.font = 'bold ' + Math.round(ch*0.95) + 'px Menlo, Consolas, "DejaVu Sans Mono", "Courier New", monospace';
+    a.textAlign = 'center'; a.textBaseline = 'middle';
+    BASE.forEach((hex, bi) => {
+      const [r, g, b] = hexRGB(hex);
+      for (let l = 0; l < LV; l++){
+        const f = 0.3 + 0.7*l/(LV-1);
+        a.fillStyle = 'rgb(' + (r*f|0) + ',' + (g*f|0) + ',' + (b*f|0) + ')';
+        for (let gi = 0; gi < NG; gi++) a.fillText(GLY[gi], gi*cw + cw/2, (bi*LV + l)*ch + ch*0.55);
+      }
+    });
+  }
+
+  function resize(){
+    const r = stage.getBoundingClientRect();
+    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    WD = Math.max(1, Math.round(r.width*dpr)); HD = Math.max(1, Math.round(r.height*dpr));
+    cv.width = WD; cv.height = HD; cv.style.width = r.width + 'px'; cv.style.height = r.height + 'px';
+    ch = Math.max(7, Math.round(HD/150)); cw = Math.max(4, Math.round(ch*0.6));
+    COLS = Math.floor(WD/cw); ROWS = Math.floor(HD/ch); N = COLS*ROWS;
+    OX = Math.floor((WD - COLS*cw)/2); OY = Math.floor((HD - ROWS*ch)/2);
+    zb = new Float32Array(N); cb = new Int16Array(N); gb = new Uint8Array(N); jit = new Float32Array(N);
+    for (let i = 0; i < N; i++){
+      let h = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16;
+      jit[i] = ((h >>> 0)/4294967296 - 0.5)*1.4;
+    }
+    const GW = COLS*cw, GH = ROWS*ch;
+    S = Math.min(GW*0.94/1.5, GH*0.92/1.84); CX = GW/2; CY = GH/2;
+    buildAtlas();
+    dirty = true;
+  }
+
+  // ---- camera ----
+  const PIV = 0.37;
+  let cyw = 1, syw = 0, cp = 1, sp = 0;
+  const LL = Math.hypot(-0.4, 0.55, 0.73), LX = -0.4/LL, LY = 0.55/LL, LZ = 0.73/LL;
+  let PX, PY, PZ, RX, RY, RZ, BX, BY, BZ;
+  function proj(x, y, z){
+    const y0 = y - PIV, x1 = x*cyw + z*syw, z1 = -x*syw + z*cyw;
+    PX = CX + x1*S; PY = CY - (y0*cp - z1*sp)*S; PZ = y0*sp + z1*cp;
+  }
+  function rot(x, y, z){
+    const x1 = x*cyw + z*syw, z1 = -x*syw + z*cyw;
+    RX = x1; RY = y*cp - z1*sp; RZ = y*sp + z1*cp;
+  }
+  function put(c, r, z, base, b){
+    if (c < 0 || r < 0 || c >= COLS || r >= ROWS) return;
+    const i = r*COLS + c;
+    if (z <= zb[i]) return;
+    zb[i] = z;
+    b = b < 0 ? 0 : b > 1 ? 1 : b;
+    cb[i] = base*LV + ((b*(LV-1) + 0.5) | 0);
+    const g = ((0.3 + 0.7*b)*NG + jit[i]) | 0;
+    gb[i] = g < 0 ? 0 : g >= NG ? NG-1 : g;
+  }
+  function putP(z, base, b){ put(Math.floor(PX/cw), Math.floor(PY/ch), z, base, b); }
+
+  // ---- il bouquet (unità del mondo, y verso l’alto, z verso chi guarda) ----
+  const FL = [
+    {p:[ 0.00,0.98,-0.02], rad:0.23, k:26, face:[ 0.00,0.25,1.0], leaves:[{t:0.60,az:2.6,len:0.20},{t:0.72,az:0.4,len:0.18}]},
+    {p:[-0.40,0.80,-0.10], rad:0.19, k:22, face:[-0.50,0.30,1.0], leaves:[{t:0.62,az:3.3,len:0.20}]},
+    {p:[ 0.42,0.82,-0.08], rad:0.2, k:22, face:[ 0.50,0.30,1.0], leaves:[{t:0.60,az:-0.2,len:0.21}]},
+    {p:[-0.20,0.50, 0.16], rad:0.19, k:22, face:[-0.25,0.05,1.0], leaves:[{t:0.58,az:2.0,len:0.17},{t:0.44,az:2.9,len:0.22}]},
+    {p:[ 0.23,0.47, 0.18], rad:0.2, k:22, face:[ 0.30,0.00,1.0], leaves:[{t:0.56,az:1.1,len:0.18},{t:0.44,az:0.2,len:0.22}]},
+    {p:[-0.58,0.40,-0.04], rad:0.15, k:20, face:[-0.80,0.00,1.0], leaves:[{t:0.70,az:3.6,len:0.16}]},
+    {p:[ 0.60,0.42,-0.02], rad:0.15, k:20, face:[ 0.80,0.10,1.0], leaves:[{t:0.70,az:-0.5,len:0.16}]},
+    {p:[-0.16,1.20,-0.14], rad:0.20, bud:true, face:[-0.20,0.60,0.5], leaves:[{t:0.74,az:3.0,len:0.12}]},
+    {p:[ 0.27,1.16,-0.16], rad:0.20, bud:true, face:[ 0.30,0.60,0.5], leaves:[{t:0.74,az:0.1,len:0.12}]},
+  ];
+  FL.forEach((f, i) => {
+    const l = Math.hypot(f.face[0], f.face[1], f.face[2]);
+    const n = f.face.map(v => v/l);
+    let a = [n[2], 0, -n[0]]; const al = Math.hypot(a[0], a[2]) || 1; a = [a[0]/al, 0, a[2]/al];
+    const b = [n[1]*a[2] - n[2]*a[1], n[2]*a[0] - n[0]*a[2], n[0]*a[1] - n[1]*a[0]];
+    f.n = n; f.a = a; f.b = b; f.rot = i*0.37; f.cur = f.p.slice(); f.order = i;
+  });
+
+  function stemPts(f){
+    const H = f.cur, n = f.n;
+    f.P0 = [-H[0]*0.04, -0.47, -H[2]*0.04];
+    f.P1 = [ H[0]*0.03, -0.02,  H[2]*0.03];
+    f.P2 = [H[0] - n[0]*0.22, H[1] - 0.26, H[2] - n[2]*0.22];
+    f.P3 = [H[0] - n[0]*0.03, H[1] - n[1]*0.03, H[2] - n[2]*0.03];
+  }
+  function bez(f, u){
+    const v = 1 - u, a = v*v*v, b = 3*v*v*u, c = 3*v*u*u, d = u*u*u;
+    BX = a*f.P0[0] + b*f.P1[0] + c*f.P2[0] + d*f.P3[0];
+    BY = a*f.P0[1] + b*f.P1[1] + c*f.P2[1] + d*f.P3[1];
+    BZ = a*f.P0[2] + b*f.P1[2] + c*f.P2[2] + d*f.P3[2];
+  }
+
+  function drawStem(f, g){
+    const th = f.bud ? 0.008 : 0.011, rp = th*S;
+    const rx = Math.max(rp, cw*0.62), ry = Math.max(rp, ch*0.62);
+    let Lp = 0, lx = 0, ly = 0;
+    for (let k = 0; k <= 16; k++){ bez(f, g*k/16); proj(BX, BY, BZ); if (k) Lp += Math.hypot(PX - lx, PY - ly); lx = PX; ly = PY; }
+    const ns = Math.max(2, Math.ceil(Lp/(0.5*cw)));
+    for (let k = 0; k <= ns; k++){
+      bez(f, g*k/ns); proj(BX, BY, BZ);
+      const tip = g < 1 && k > ns - 3;
+      const c0 = Math.floor((PX - rx)/cw), c1 = Math.floor((PX + rx)/cw);
+      const r0 = Math.floor((PY - ry)/ch), r1 = Math.floor((PY + ry)/ch);
+      for (let r = r0; r <= r1; r++){
+        const dy = ((r + .5)*ch - PY)/ry;
+        for (let c = c0; c <= c1; c++){
+          const dx = ((c + .5)*cw - PX)/rx, d2 = dx*dx + dy*dy;
+          if (d2 > 1) continue;
+          const h = Math.sqrt(1 - d2);
+          put(c, r, PZ + h*th, tip ? VEIN : STEM, 0.45 + 0.5*h - 0.2*dx);
+        }
+      }
+    }
+  }
+
+  function drawLeaf(f, lf, lg){
+    bez(f, lf.t); const Ax = BX, Ay = BY, Az = BZ;
+    const ca = Math.cos(lf.az), sa = Math.sin(lf.az);
+    let dx = ca, dy = 0.3, dz = sa; const dl = Math.hypot(dx, dy, dz); dx /= dl; dy /= dl; dz /= dl;
+    const sx = -sa, sy = 0, sz = ca;
+    const nx = dy*sz - dz*sy, ny = dz*sx - dx*sz, nz = dx*sy - dy*sx;
+    rot(nx, ny, nz); const lit = Math.abs(RX*LX + RY*LY + RZ*LZ);
+    const len = lf.len*lg, w = lf.len*0.42*lg, droop = lf.len*0.55*lg;
+    const Nu = Math.ceil(len*S/(0.45*cw)) + 1, Nv = Math.ceil(w*S/(0.45*cw)) + 1;
+    for (let iu = 0; iu <= Nu; iu++){
+      const u = iu/Nu;
+      const wu = w*Math.sin(Math.PI*Math.pow(u, 0.75))*(1 + 0.07*Math.sin(u*38));
+      const cx = Ax + dx*u*len, cy = Ay + dy*u*len - droop*u*u, cz = Az + dz*u*len;
+      for (let iv = -Nv; iv <= Nv; iv++){
+        const v = iv/Nv, av = Math.abs(v), off = v*wu, cup = 0.22*wu*v*v;
+        proj(cx + sx*off + nx*cup, cy + sy*off + ny*cup, cz + sz*off + nz*cup);
+        const vein = av < 0.07 && u < 0.92;
+        const sec = Math.abs((u*7 - av*1.6) % 1) < 0.08;
+        const b = (0.4 + 0.55*lit)*(0.8 + 0.2*(1 - av)) + (sec ? 0.12 : 0);
+        putP(PZ, vein ? VEIN : LEAF, vein ? b*0.9 : b);
+      }
+    }
+  }
+
+  function drawHead(f, bloom){
+    const bud = easeOut(clamp(bloom/0.3));
+    const open = f.bud ? 0 : ease(clamp((bloom - 0.25)/0.75));
+    if (bud <= 0) return;
+    const H = f.cur, rad = f.rad;
+    proj(H[0], H[1], H[2]); const hx = PX, hy = PY, hz = PZ;
+    rot(f.a[0], f.a[1], f.a[2]); const ax = RX, ay = RY, az = RZ;
+    rot(f.b[0], f.b[1], f.b[2]); const bx = RX, by = RY, bz = RZ;
+    rot(f.n[0], f.n[1], f.n[2]); const ndl = RX*LX + RY*LY + RZ*LZ;
+    const det = ax*by - bx*ay;
+    if (Math.abs(det) < 0.02) return;
+    const front = det > 0;
+    const lf = front ? 0.72 + 0.28*Math.max(0, ndl) : 0.45 + 0.35*Math.max(0, -ndl);
+    const ext = (open > 0 ? rad : rad*0.36*bud)*S;
+    const c0 = Math.floor((hx - ext)/cw), c1 = Math.floor((hx + ext)/cw);
+    const r0 = Math.floor((hy - ext)/ch), r1 = Math.floor((hy + ext)/ch);
+    const rd = 0.3 + 0.08*open, rp = rd + (1 - rd)*open, k = f.k || 21, rot0 = f.rot;
+    const hwMax = (Math.PI/k)*(rd + (rp - rd)*0.4)*0.78;
+    for (let r = r0; r <= r1; r++){
+      const dY = (hy - (r + .5)*ch)/S;
+      for (let c = c0; c <= c1; c++){
+        const dX = ((c + .5)*cw - hx)/S;
+        const u = (dX*by - dY*bx)/det, v = (ax*dY - ay*dX)/det;
+        const rr = Math.hypot(u, v)/rad;
+        if (rr > 1.02) continue;
+        const z0 = hz + u*az + v*bz;
+        const ang = Math.atan2(v, u);
+
+        if (open <= 0){ // bocciolo
+          const rb = 0.32*bud, q = rr/rb;
+          if (q >= 1) continue;
+          const sep = Math.abs(Math.cos(4.5*(ang - rot0)));
+          if (q > 0.78 + 0.22*sep) continue;
+          put(c, r, z0 + (1 - q)*rad*0.25, GREEN, (0.35 + 0.55*(1 - q*q))*lf + 0.1*sep);
+          continue;
+        }
+        if (rr < rd){ // disco dei semi
+          const q = rr/rd;
+          if (!front){ put(c, r, z0, GREEN, (0.3 + 0.35*(0.5 + 0.5*Math.cos(14*ang)))*lf*(1.1 - q*0.4)); continue; }
+          const val = (Math.cos(21*ang + 40*q)*Math.cos(-34*ang + 40*q) + 1)/2;
+          let base, b;
+          if (q < 0.18){ base = GREEN; b = 0.2 + 0.3*val; }
+          else if (q > 0.86){ base = SEED; b = 0.5 + 0.4*val; }
+          else { base = val > 0.82 ? SEED : (val < 0.45 ? DISKD : DISK); b = 0.35 + 0.5*val; }
+          put(c, r, z0 + (1 - q*q)*rad*0.08, base, b*lf*1.15);
+          continue;
+        }
+        if (rr > rp*1.02) continue;
+        const along = (rr - rd)/(rp - rd);
+        const a1 = (ang - rot0)*k/TW;
+        const fr = a1 - Math.round(a1), lat = Math.abs(fr)*(TW/k)*rr;
+        const al = Math.min(1, Math.max(0, along)), sa = Math.sin(Math.PI*al);
+        const hw = hwMax*Math.pow(al < 0.35 ? Math.sin(Math.PI*al/0.7) : (1 - al)/0.65, 0.85), curl = sa*rad*0.05;
+        if (along <= 1 && lat < hw){ // petali davanti
+          const m = lat/hw;
+          const base = !front ? PETB : (open < 0.45 ? PETY : PET);
+          put(c, r, z0 + curl + 0.004, base, (0.62 + 0.38*(1 - m*m) - 0.12*along)*lf);
+          continue;
+        }
+        const fr2 = a1 - Math.floor(a1) - 0.5, lat2 = Math.abs(fr2)*(TW/k)*rr;
+        const along2 = (rr - rd)/((rp - rd)*0.82);
+        if (along2 <= 1){ // petali dietro
+          const a2 = Math.max(0, along2), hw2 = hwMax*0.9*Math.pow(a2 < 0.35 ? Math.sin(Math.PI*a2/0.7) : (1 - a2)/0.65, 0.85);
+          if (lat2 < hw2){
+            const m = lat2/hw2;
+            put(c, r, z0 + curl*0.6, open < 0.45 ? PETY : PETB, (0.4 + 0.4*(1 - m*m))*lf);
+            continue;
+          }
+        }
+        const along3 = (rr - rd)/0.2; // sepali verdi
+        if (along3 < 1){
+          const a3 = (ang - rot0 + 0.1)*13/TW, f3 = Math.abs(a3 - Math.round(a3));
+          if (f3 < 0.5*(1 - along3)) put(c, r, z0 - 0.002, GREEN, (0.25 + 0.3*(1 - along3))*lf);
+        }
+      }
+    }
+  }
+
+  // ---- carta e fiocco ----
+  const WYB = -0.5, WR0 = 0.03, WR1 = 0.29, BAND = 0.55;
+  function drawWrap(wp, bowP){
+    const Nf = Math.ceil(TW*0.34*S/(0.45*cw)), Nh = Math.ceil(0.65*S/(0.45*cw));
+    for (let i = 0; i < Nf; i++){
+      const ph = TW*i/Nf, s_ = Math.sin(ph), c_ = Math.cos(ph);
+      const yt = 0.07 + 0.035*Math.cos(7*ph);
+      const nl = Math.hypot(s_, 0.45, c_);
+      rot(s_/nl, -0.45/nl, c_/nl);
+      const facing = RZ > 0, lit = Math.abs(RX*LX + RY*LY + RZ*LZ);
+      const crease = ((ph*6/TW) % 1) < 0.035;
+      const angF = Math.abs(Math.atan2(s_, c_));
+      for (let j = 0; j <= Nh; j++){
+        const h = j/Nh; if (h > wp) break;
+        const y = WYB + h*(yt - WYB), R = WR0 + (WR1 - WR0)*h + 0.05*h*h*h*h;
+        proj(R*s_, y, R*c_);
+        let base = facing ? WRAP : WRAPIN, b = (0.3 + 0.6*lit)*(facing ? 1 : 0.7), z = PZ;
+        if (crease) b *= 0.55;
+        b += 0.06*Math.sin(h*55 + ph*9);
+        if (wp >= 1 && j >= Nh - 1) b += 0.2;
+        if (facing && bowP > 0 && Math.abs(h - BAND) < 0.032 && angF <= bowP*Math.PI){ base = BOW; b = 0.35 + 0.55*lit; z += 0.003; }
+        putP(z, base, b);
+      }
+    }
+  }
+
+  function drawBow(bp){
+    const e = easeOut(bp);
+    const kx = 0, ky = WYB + BAND*(0.105 - WYB), kz = WR0 + (WR1 - WR0)*BAND + 0.05*Math.pow(BAND, 4) + 0.012;
+    for (const sg of [-1, 1]){
+      const cx = kx + sg*0.085*e, cy = ky + 0.03*e, cz = kz + 0.02;
+      const ex = 0.085*e, ey = 0.05*e;
+      const Nt = Math.ceil(TW*ex*S/(0.4*cw)) + 8, Nr = Math.ceil(ey*0.45*S/(0.4*cw)) + 2;
+      for (let it = 0; it < Nt; it++){
+        const tt = TW*it/Nt, ct = Math.cos(tt), st = Math.sin(tt);
+        for (let ir = 0; ir <= Nr; ir++){
+          const q = 0.55 + 0.45*ir/Nr;
+          proj(cx + ex*ct*q, cy + ey*st*q, cz + 0.015*(1 - q));
+          putP(PZ, BOW, 0.35 + 0.4*(0.5 + 0.5*st) + 0.15*(q - 0.55));
+        }
+      }
+    }
+    for (const sg of [-1, 1]){
+      const Nq = Math.ceil(0.17*e*S/(0.4*cw)) + 2, Nw = Math.ceil(0.016*S/(0.4*cw)) + 1;
+      for (let iq = 0; iq <= Nq; iq++){
+        const q = iq/Nq;
+        for (let iw = -Nw; iw <= Nw; iw++){
+          const w = iw/Nw;
+          proj(kx + sg*(0.012 + 0.055*q)*e + 0.016*w, ky - 0.17*q*e, kz + 0.015 + 0.01*q);
+          putP(PZ, BOW, 0.6 - 0.35*q + 0.1*w*sg);
+        }
+      }
+    }
+    const kr = 0.022*e, Nk = Math.ceil(kr*S/(0.4*cw)) + 1;
+    for (let iu = -Nk; iu <= Nk; iu++) for (let iv = -Nk; iv <= Nk; iv++){
+      const u = iu/Nk, v = iv/Nk, d = u*u + v*v; if (d > 1) continue;
+      proj(kx + u*kr, ky + v*kr, kz + 0.03 + 0.012*(1 - d));
+      putP(PZ, BOW, 0.55 + 0.35*(1 - d) - 0.15*u);
+    }
+  }
+
+  // ---- un fotogramma ----
+  function render(p, t, tiltX, tiltY){
+    zb.fill(-1e9); cb.fill(-1);
+    const e = ease(p);
+    const yaw = -0.6*(1 - e) + amp*0.13*Math.sin(t*0.4) + tiltX*0.4;
+    const pit = 0.34 - 0.22*e + amp*0.04*Math.sin(t*0.31 + 1) - tiltY*0.15;
+    cyw = Math.cos(yaw); syw = Math.sin(yaw); cp = Math.cos(pit); sp = Math.sin(pit);
+
+    for (const f of FL){
+      const i = f.order;
+      f.cur[0] = f.p[0] + amp*0.012*Math.sin(t*0.9 + i*1.3);
+      f.cur[1] = f.p[1] + amp*0.006*Math.sin(t*1.1 + i);
+      f.cur[2] = f.p[2] + amp*0.010*Math.sin(t*0.7 + i*2);
+      stemPts(f);
+      f.g = ease(clamp((p - (0.04 + i*0.025))/0.3));
+      if (f.g > 0){
+        drawStem(f, f.g);
+        for (const lf of f.leaves){
+          const lg = ease(clamp((f.g - lf.t)/0.22));
+          if (lg > 0) drawLeaf(f, lf, lg);
+        }
+      }
+      const bloom = clamp((p - (0.36 + i*0.03))/0.3);
+      if (bloom > 0) drawHead(f, bloom);
+    }
+    const wp = easeOut(clamp((p - 0.78)/0.14));
+    const bp = clamp((p - 0.9)/0.08);
+    if (wp > 0) drawWrap(wp, bp);
+    if (bp > 0) drawBow(bp);
+
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, WD, HD);
+    let i = 0;
+    for (let r = 0; r < ROWS; r++){
+      const y = OY + r*ch;
+      for (let c = 0; c < COLS; c++, i++){
+        const ci = cb[i];
+        if (ci >= 0) ctx.drawImage(atlas, gb[i]*cw, ci*ch, cw, ch, OX + c*cw, y, cw, ch);
+      }
+    }
+  }
+
+  // ---- input: puntatore, dito, inclinazione del telefono ----
+  let tTX = 0, tTY = 0, tiltX = 0, tiltY = 0;
+  window.addEventListener('pointermove', e => {
+    if (e.pointerType !== 'mouse') return;
+    tTX = (e.clientX/window.innerWidth)*2 - 1;
+    tTY = (e.clientY/window.innerHeight)*2 - 1;
+  }, {passive:true});
+  window.addEventListener('touchmove', e => {
+    const t = e.touches[0]; if (!t) return;
+    tTX = (t.clientX/window.innerWidth)*2 - 1;
+  }, {passive:true});
+  window.addEventListener('deviceorientation', e => {
+    if (e.gamma == null) return;
+    tTX = clamp((e.gamma + 30)/60)*2 - 1;
+    if (e.beta != null) tTY = clamp((e.beta - 20)/60)*2 - 1;
+  }, {passive:true});
+
+  // ---- scroll ----
+  let target = 0, cur = -1;
+  function progress(){
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    return max > 0 ? clamp(window.scrollY/max) : 0;
+  }
+  window.addEventListener('scroll', () => { target = progress(); }, {passive:true});
+  window.addEventListener('resize', () => { resize(); target = progress(); });
+
+  function frame(now){
+    const t = now/1000;
+    let changed = dirty; dirty = false;
+    if (cur < 0){ cur = target; changed = true; }
+    else if (cur !== target){
+      cur += (target - cur)*0.12;
+      if (Math.abs(target - cur) < 0.0004) cur = target;
+      changed = true;
+    }
+    const ox = tiltX, oy = tiltY;
+    tiltX += (tTX - tiltX)*0.06; tiltY += (tTY - tiltY)*0.06;
+    if (Math.abs(tiltX - ox) + Math.abs(tiltY - oy) > 1e-4) changed = true;
+    if (changed || amp) render(cur, t, tiltX, tiltY);
+    hint.style.visibility = cur > 0.04 ? 'hidden' : 'visible';
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  target = progress();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
