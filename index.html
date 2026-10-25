@@ -32,6 +32,7 @@
     letter-spacing:.08em; pointer-events:none; opacity:0;
     animation:hintIn 1.6s 1.2s ease forwards;
   }
+  @media (pointer: coarse){ .hint{ top:50%; bottom:auto; transform:translateY(-50%); } }
   .hint span{ display:inline-block; animation:bob 2.2s 2.8s ease-in-out infinite; }
   @keyframes hintIn{ to{ opacity:1; } }
   @keyframes bob{ 50%{ transform:translateY(5px); } }
@@ -54,6 +55,7 @@
   const hint = document.getElementById('hint');
   const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const amp = reduce ? 0 : 1;
+  const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
   const TW = Math.PI*2;
 
   // ---- glifi e colori ----
@@ -101,7 +103,8 @@
       jit[i] = ((h >>> 0)/4294967296 - 0.5)*1.4;
     }
     const GW = COLS*cw, GH = ROWS*ch;
-    S = Math.min(GW*0.94/1.5, GH*0.92/1.84); CX = GW/2; CY = GH/2;
+    // su smartphone il mazzo riempie il 90% dell'altezza, anche a costo di tagliare i lati
+    S = coarse ? GH*0.90/1.84 : Math.min(GW*0.94/1.5, GH*0.92/1.84); CX = GW/2; CY = GH/2;
     buildAtlas();
     dirty = true;
   }
