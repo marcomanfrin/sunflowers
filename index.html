@@ -559,11 +559,24 @@
     const t = e.touches[0]; if (!t) return;
     tTX = (t.clientX/window.innerWidth)*2 - 1;
   }, {passive:true});
+  // la prima lettura fa da posizione neutra, così conta solo quanto si inclina il telefono
+  let g0 = null, b0 = null;
   window.addEventListener('deviceorientation', e => {
     if (e.gamma == null) return;
-    tTX = clamp((e.gamma + 30)/60)*2 - 1;
-    if (e.beta != null) tTY = clamp((e.beta - 20)/60)*2 - 1;
+    if (g0 == null){ g0 = e.gamma; b0 = e.beta ?? 0; }
+    tTX = clamp((e.gamma - g0 + 25)/50)*2 - 1;
+    if (e.beta != null) tTY = clamp((e.beta - b0 + 25)/50)*2 - 1;
   }, {passive:true});
+  // iOS 13+: i dati di orientamento arrivano solo dopo un permesso chiesto in un gesto dell'utente
+  if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function'){
+    const ask = () => {
+      window.removeEventListener('touchend', ask);
+      window.removeEventListener('click', ask);
+      DeviceOrientationEvent.requestPermission().catch(() => {});
+    };
+    window.addEventListener('touchend', ask);
+    window.addEventListener('click', ask);
+  }
 
   // ---- scroll ----
   let target = 0, cur = -1;
